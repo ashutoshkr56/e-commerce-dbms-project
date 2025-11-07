@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Simple Ecommerce</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; background:#f6f7fb; }
+    header { background:#1f2937; color:#fff; padding:10px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    header h1 { margin:0; font-size:18px; }
+    .search { flex:1; display:flex; gap:8px; }
+    input, select, button { padding:8px; border:1px solid #cfd3dc; border-radius:6px; }
+    button { background:#2563eb; color:#fff; border:none; cursor:pointer; }
+    button.secondary { background:#6b7280; }
+    main { padding:16px; max-width:1100px; margin:0 auto; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap:14px; }
+    .card { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+    .card img { width:100%; height:180px; object-fit:cover; border-radius:8px; background:#f0f0f0; }
+    .row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .price { color:#065f46; font-weight:600; }
+    .muted { color:#6b7280; font-size:12px; }
+    .bar { display:flex; gap:8px; margin:10px 0; align-items:center; flex-wrap:wrap; }
+    #cartPanel { position:fixed; right:0; top:0; width:360px; max-width:90vw; height:100vh; background:#fff; border-left:1px solid #e5e7eb; padding:14px; transform:translateX(100%); transition:transform .25s; overflow:auto; }
+    #cartPanel.open { transform:translateX(0); }
+    .cart-item { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px dashed #eee; }
+    footer { padding:16px; text-align:center; color:#6b7280; }
+    .auth-box { display:flex; gap:8px; }
+    .pill { background:#eef2ff; color:#3730a3; padding:4px 8px; border-radius:999px; font-size:12px; }
+    .danger { background:#fee2e2; color:#991b1b; }
+    .success { background:#dcfce7; color:#166534; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Ecommerce</h1>
+    <div class="search">
+      <input id="q" type="search" placeholder="Search products..." />
+      <select id="cat"></select>
+      <button id="searchBtn">Search</button>
+    </div>
+    <div class="auth-box">
+      <span id="authState" class="pill">Guest</span>
+      <button id="loginBtn" class="secondary">Login</button>
+      <button id="registerBtn" class="secondary">Register</button>
+      <button id="logoutBtn" class="secondary" style="display:none;">Logout</button>
+    </div>
+    <button id="cartBtn">Cart 🛒 <span id="cartCount" class="pill">0</span></button>
+  </header>
+
+  <main>
+    <div class="bar">
+      <span class="muted">Browse products. Filter by category or search. Add to cart and checkout.</span>
+      <span id="flash" class="pill" style="display:none;"></span>
+    </div>
+    <div class="grid" id="products"></div>
+  </main>
+
+  <aside id="cartPanel">
+    <div class="row">
+      <h3>Your Cart</h3>
+      <button id="closeCart" class="secondary">Close</button>
+    </div>
+    <div id="cartItems"></div>
+    <div class="row" style="margin-top:10px;">
+      <strong>Total:</strong>
+      <strong id="cartTotal" class="price">₹0.00</strong>
+    </div>
+    <div class="bar">
+      <button id="checkoutBtn">Checkout</button>
+      <span class="muted">Requires login</span>
+    </div>
+  </aside>
+
+  <footer>
+    Demo using PHP + MySQL schema from ecommerce_db.sql
+  </footer>
+
+  <script>
+    const API = 'api.php';
+    let state = {
+      token: localStorage.getItem('token') || null,
+      user: JSON.parse(localStorage.getItem('user') || 'null'),
+      products: [],
+      categories: [],
+      cart: { items: [], total: 0 },
+      filters: { q: '', category_id: '' },
+    };
+
+    const el = (id) => document.getElementById(id);
+    const show = (id) => el(id).style.display = '';
+    const hide = (id) => el(id).style.display = 'none';
+    const flash = (msg, type='success') => {
+      const f = el('flash');
+      f.textContent = msg;
+      f.className = 'pill ' + (type==='danger'?'danger':'success');
+      f.style.display = '';
+      setTimeout(()=>f.style.display='none', 2500);
+    };
+
+    function renderAuth() {
+      if (state.user) {
+        el('authState').textContent = 'User: ' + state.user.username;
+        hide('loginBtn'); hide('registerBtn'); show('logoutBtn');
+      } else {
+        el('authState').textContent = 'Guest';
+        show('loginBtn'); show('registerBtn'); hide('logoutBtn');
+      }
+    }
+
+    function productCard(p) {
+      return `
+        <div class="card">
+          <img src="${p.image_url || 'https://placehold.co/300x300?text=No+Image'}" alt="${p.product_name}" />
+          <div class="row">
+            <strong>${p.product_name}</strong>
+            <span class="price">₹${Number(p.price).toFixed(2)}</span>
+          </div>
+          <div class="muted">${p.category_name || ''}</div>
+          <div class="muted">Stock: ${p.stock}</div>
+          <div class="row">
+            <button onclick="addToCart(${p.product_id})">Add to Cart</button>
+            <button class="secondary" onclick="viewDetails(${p.product_id})">Details</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderProducts() {
+      el('products').innerHTML = state.products.map(productCard).join('');
+    }
+
+    function renderCategories() {
+      const s = el('cat');
+      s.innerHTML = `<option value="">All categories</option>` +
+        state.categories.map(c => `<option value="${c.category_id}">${c.category_name}</option>`).join('');
+    }
+
+    function renderCart() {
+      el('cartItems').innerHTML = state.cart.items.map(ci => `
+        <div class="cart-item">
+          <div>
+            <div>${ci.product_name}</div>
+            <div class="muted">₹${Number(ci.price).toFixed(2)} × ${ci.quantity}</div>
+          </div>
+          <div>
+            <button class="secondary" onclick="updateQty(${ci.cart_item_id}, ${ci.quantity-1})">-</button>
+            <button class="secondary" onclick="updateQty(${ci.cart_item_id}, ${ci.quantity+1})">+</button>
+            <button class="secondary" onclick="removeItem(${ci.cart_item_id})">Remove</button>
+          </div>
+        </div>
+      `).join('') || '<p class="muted">Cart is empty</p>';
+      el('cartTotal').textContent = '₹' + Number(state.cart.total).toFixed(2);
+      el('cartCount').textContent = String(state.cart.items.reduce((a,b)=>a+b.quantity,0));
+    }
+
+    async function api(path, opts={}) {
+      const headers = {'Content-Type':'application/json'};
+      if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+      const res = await fetch(API + path, { ...opts, headers });
+      const data = await res.json().catch(()=> ({}));
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+
+    async function loadCategories() {
+      state.categories = await api('?action=get_categories');
+      renderCategories();
+    }
+
+    async function loadProducts() {
+      const p = new URLSearchParams();
+      if (state.filters.q) p.append('q', state.filters.q);
+      if (state.filters.category_id) p.append('category_id', state.filters.category_id);
+      const qs = p.toString() ? '&' + p.toString() : '';
+      state.products = await api('?action=get_products' + qs);
+      renderProducts();
+    }
+
+    async function loadCart() {
+      const user_id = state.user?.user_id || 1; // fallback to demo cart 1
+      const d = await api(`?action=get_cart&user_id=${user_id}`);
+      state.cart = d;
+      renderCart();
+    }
+
+    async function ensureUserCart() {
+      // Creates/returns a cart for the logged-in user
+      if (!state.user) return 1; // demo cart id
+      const d = await api(`?action=get_or_create_cart`, { method:'POST', body: JSON.stringify({ user_id: state.user.user_id }) });
+      return d.cart_id;
+    }
+
+    async function addToCart(product_id) {
+      try {
+        const cart_id = await ensureUserCart();
+        await api(`?action=add_to_cart`, { method:'POST', body: JSON.stringify({ cart_id, product_id, quantity: 1 }) });
+        flash('Added to cart');
+        await loadCart();
+      } catch(e){ flash(e.message, 'danger'); }
+    }
+
+    async function updateQty(cart_item_id, qty) {
+      try {
+        if (qty <= 0) { return removeItem(cart_item_id); }
+        await api(`?action=update_cart_item`, { method:'POST', body: JSON.stringify({ cart_item_id, quantity: qty }) });
+        await loadCart();
+      } catch(e){ flash(e.message, 'danger'); }
+    }
+
+    async function removeItem(cart_item_id) {
+      try {
+        await api(`?action=remove_cart_item`, { method:'POST', body: JSON.stringify({ cart_item_id }) });
+        await loadCart();
+      } catch(e){ flash(e.message, 'danger'); }
+    }
+
+    async function checkout() {
+      try {
+        if (!state.user) { flash('Please login first', 'danger'); return; }
+        await api(`?action=checkout`, { method:'POST', body: JSON.stringify({ user_id: state.user.user_id }) });
+        flash('Order placed!');
+        await loadCart();
+        await loadProducts();
+      } catch(e){ flash(e.message, 'danger'); }
+    }
+
+    function viewDetails(pid) {
+      const p = state.products.find(x => x.product_id === pid);
+      if (!p) return;
+      alert(`${p.product_name}\n\n${p.description}\n\nPrice: ₹${Number(p.price).toFixed(2)}\nStock: ${p.stock}`);
+    }
+
+    async function login() {
+      const username = prompt('Username:');
+      const password = prompt('Password:');
+      if (!username || !password) return;
+      try {
+        const d = await api(`?action=login`, { method:'POST', body: JSON.stringify({ username, password }) });
+        state.token = d.token; state.user = d.user;
+        localStorage.setItem('token', state.token);
+        localStorage.setItem('user', JSON.stringify(state.user));
+        renderAuth();
+        await loadCart();
+        flash('Logged in');
+      } catch(e){ flash(e.message, 'danger'); }
+    }
+
+    async function register() {
+      const username = prompt('Choose username:');
+      const email = prompt('Email:');
+      const password = prompt('Password:');
+      if (!username || !email || !password) return;
+      try {
+        await api(`?action=register`, { method:'POST', body: JSON.stringify({ username, email, password }) });
+        flash('Registered. Please login.');
+      } catch(e){ flash(e.message, 'danger'); }
+    }
+
+    function logout() {
+      state.token = null; state.user = null;
+      localStorage.removeItem('token'); localStorage.removeItem('user');
+      renderAuth();
+      flash('Logged out');
+    }
+
+    // Wire UI
+    el('searchBtn').onclick = async () => {
+      state.filters.q = el('q').value.trim();
+      state.filters.category_id = el('cat').value;
+      await loadProducts();
+    };
+    el('cartBtn').onclick = () => el('cartPanel').classList.add('open');
+    el('closeCart').onclick = () => el('cartPanel').classList.remove('open');
+    el('checkoutBtn').onclick = checkout;
+    el('loginBtn').onclick = login;
+    el('registerBtn').onclick = register;
+    el('logoutBtn').onclick = logout;
+
+    // Initial load
+    (async function init(){
+      renderAuth();
+      await loadCategories();
+      await loadProducts();
+      await loadCart();
+    })();
+  </script>
+</body>
+</html>
